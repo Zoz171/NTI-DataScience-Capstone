@@ -1,351 +1,341 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.preprocessing import RobustScaler
-from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LogisticRegression, LinearRegression
-from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, GradientBoostingClassifier, GradientBoostingRegressor
-from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
-from sklearn.svm import SVC, SVR
-from sklearn.naive_bayes import GaussianNB
-from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import seaborn as sns
 import matplotlib.pyplot as plt
-import pickle
-import os
-
-# Set page config
-st.set_page_config(page_title="ML Model Training App", layout="wide")
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.linear_model import LinearRegression
+from sklearn.tree import DecisionTreeRegressor
+from xgboost import XGBRegressor
+from sklearn.svm import SVR
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import mean_squared_error, r2_score
+import joblib
+from textblob import TextBlob
 
 # Initialize session state variables
-if 'data' not in st.session_state:
-    st.session_state.data = None
-if 'model' not in st.session_state:
-    st.session_state.model = None
-if 'target_column' not in st.session_state:
-    st.session_state.target_column = None
-if 'problem_type' not in st.session_state:
-    st.session_state.problem_type = None
-if 'training_results' not in st.session_state:
-    st.session_state.training_results = {}
+if 'df' not in st.session_state:
+    st.session_state.df = None
+if 'df_processed' not in st.session_state:
+    st.session_state.df_processed = None
+if 'uploaded_file_name' not in st.session_state:
+    st.session_state.uploaded_file_name = None
+if 'models' not in st.session_state:
+    st.session_state.models = {}
+if 'preprocessor' not in st.session_state:
+    st.session_state.preprocessor = None
+if 'label_encoders' not in st.session_state:
+    st.session_state.label_encoders = {}
 
-# Model definitions
-MODEL_DEFINITIONS = {
-    "LG": "Logistic Regression - A linear model for classification that predicts the probability of occurrence of an event.",
-    "DT": "Decision Tree Classifier - A tree-structured model that makes decisions based on feature thresholds.",
-    "RF": "Random Forest Classifier - An ensemble of decision trees that uses bagging to improve prediction accuracy.",
-    "KNN": "K-Nearest Neighbors Classifier - Classifies based on the majority class of K nearest training samples.",
-    "SVC": "Support Vector Classifier - Creates a hyperplane that best separates classes with maximum margin.",
-    "GNB": "Gaussian Naive Bayes - A probabilistic classifier based on Bayes' theorem with independence assumptions.",
-    "GBC": "Gradient Boosting Classifier - An ensemble method that builds trees sequentially to correct previous errors.",
-    # Regression models
-    "LR": "Linear Regression - A linear approach to modeling the relationship between features and target.",
-    "DTR": "Decision Tree Regressor - A tree-structured model for continuous value prediction.",
-    "RFR": "Random Forest Regressor - An ensemble of decision trees for robust regression predictions.",
-    "KNNR": "K-Nearest Neighbors Regressor - Predicts based on the average of K nearest training samples.",
-    "SVR": "Support Vector Regressor - Applies SVM principles to regression tasks.",
-    "GBR": "Gradient Boosting Regressor - An ensemble method that combines weak learners for accurate predictions."
-}
+# Sidebar navigation
+page = st.sidebar.selectbox("Choose a page", ["Dashboard", "Train Models", "Make Predictions"])
 
-# Define classification and regression models
-def get_models(problem_type):
-    models = []
-    if problem_type == 'classification':
-        models.extend([
-            ["LG", LogisticRegression(class_weight='balanced')],
-            ["DT", DecisionTreeClassifier()],
-            ["RF", RandomForestClassifier()],
-            ["KNN", KNeighborsClassifier()],
-            ["SVC", SVC()],
-            ["GNB", GaussianNB()],
-            ["GBC", GradientBoostingClassifier()]
-        ])
-    else:  # regression
-        models.extend([
-            ["LR", LinearRegression()],
-            ["DTR", DecisionTreeRegressor()],
-            ["RFR", RandomForestRegressor()],
-            ["KNNR", KNeighborsRegressor()],
-            ["SVR", SVR()],
-            ["GBR", GradientBoostingRegressor()]
-        ])
-    return models
+def load_and_process_data(file):
+    df = pd.read_csv(file)
+    return df
 
-# Define parameter grids for GridSearchCV
-def get_param_grid(model_name):
-    param_grids = {
-        "LG": {
-            "LG__C": [1, 5, 10],
-        },
-        "DT": {
-            "DT__max_depth": [3, 6, 9, 12],
-            "DT__min_samples_split": [2, 4, 6],
-            "DT__min_samples_leaf": [1, 2, 4],
-            "DT__max_features": [None, 2, 4],
-            "DT__random_state": [0, 7, 42]
-        },
-        "RF": {
-            "RF__n_estimators": [100, 200, 300],
-            "RF__max_depth": [3, 6, 9],
-            "RF__min_samples_split": [2, 4],
-            "RF__random_state": [42]
-        },
-        "KNN": {
-            "KNN__n_neighbors": [3, 5, 7, 9],
-            "KNN__weights": ['uniform', 'distance']
-        },
-        "SVC": {
-            "SVC__C": [0.1, 1, 10],
-            "SVC__kernel": ['rbf', 'linear'],
-            "SVC__random_state": [42]
-        },
-        "GNB": {},  # GaussianNB has no hyperparameters to tune
-        "GBC": {
-            "GBC__n_estimators": [100, 200],
-            "GBC__learning_rate": [0.01, 0.1],
-            "GBC__max_depth": [3, 5],
-            "GBC__random_state": [42]
-        },
-        # Regression models
-        "LR": {},  # LinearRegression has no hyperparameters to tune
-        "DTR": {
-            "DTR__max_depth": [3, 6, 9, 12],
-            "DTR__min_samples_split": [2, 4, 6],
-            "DTR__min_samples_leaf": [1, 2, 4],
-            "DTR__random_state": [42]
-        },
-        "RFR": {
-            "RFR__n_estimators": [100, 200, 300],
-            "RFR__max_depth": [3, 6, 9],
-            "RFR__random_state": [42]
-        },
-        "KNNR": {
-            "KNNR__n_neighbors": [3, 5, 7, 9],
-            "KNNR__weights": ['uniform', 'distance']
-        },
-        "SVR": {
-            "SVR__C": [0.1, 1, 10],
-            "SVR__kernel": ['rbf', 'linear']
-        },
-        "GBR": {
-            "GBR__n_estimators": [100, 200],
-            "GBR__learning_rate": [0.01, 0.1],
-            "GBR__max_depth": [3, 5],
-            "GBR__random_state": [42]
+def feature_engineering(df):
+    df_copy = df.copy()
+    
+    # Overall Quality calculation
+    sound_and_story_dict = {
+        'Poor': 0, 'Average': 1, 'Good': 2, 'Excellent': 3
+    }
+    graphics_dict = {
+        'Low': 0, 'Medium': 1, 'High': 2, 'Ultra': 3
+    }
+    
+    def labeling(row):
+        dict_ = {0: 'Poor', 1: 'Average', 2: 'Good', 3: 'Excellent'}
+        return dict_.get(np.ceil(row), 0)
+    
+    df_copy['Overall Quality'] = ((df_copy['Graphics Quality'].map(graphics_dict) + 
+                                 df_copy['Soundtrack Quality'].map(sound_and_story_dict) + 
+                                 df_copy['Story Quality'].map(sound_and_story_dict)) / 3).apply(labeling)
+    
+    # Sentiment Analysis
+    def get_sentiment_polarity(text):
+        if isinstance(text, str):
+            return TextBlob(text).sentiment.polarity
+        return 0.0
+    
+    df_copy['Review_Sentiment'] = df_copy['User Review Text'].apply(get_sentiment_polarity)
+    
+    return df_copy
+
+def create_visualizations(df):
+    # User Ratings Distribution
+    fig1, ax1 = plt.subplots(figsize=(10, 6))
+    sns.histplot(data=df, x='User Rating', kde=True, ax=ax1)
+    plt.title('Distribution of User Ratings')
+    st.pyplot(fig1)
+    
+    # Price vs Ratings
+    fig2, ax2 = plt.subplots(figsize=(10, 6))
+    sns.scatterplot(data=df[:100], x='User Rating', y='Price', ax=ax2)
+    plt.title('User Ratings vs Price')
+    st.pyplot(fig2)
+    
+    # Games by Platform
+    platform_counts = df['Platform'].value_counts()
+    fig3, ax3 = plt.subplots(figsize=(10, 10))
+    plt.pie(platform_counts, labels=platform_counts.index, autopct='%1.1f%%')
+    plt.title('Distribution of Games by Platform')
+    st.pyplot(fig3)
+    
+    # Top 5 Games
+    top_games = df.nlargest(5, 'User Rating')
+    fig4, ax4 = plt.subplots(figsize=(10, 6))
+    sns.barplot(data=top_games, x='User Rating', y='Game Title', ax=ax4)
+    plt.title('Top 5 Games by User Rating')
+    st.pyplot(fig4)
+
+
+    top_5_game_titles = top_games['Game Title'].tolist()
+    df_top_games_filtered = df[df['Game Title'].isin(top_5_game_titles)].copy()
+    df_top_games_filtered = df_top_games_filtered[(df_top_games_filtered['Release Year'] >= 2019) & (df_top_games_filtered['Release Year'] <= 2023)].copy()
+    fig5, ax5 = plt.subplots(figsize=(14, 7))
+    sns.lineplot(data=df_top_games_filtered, x='Release Year', y='User Rating', hue='Game Title', ax=ax5)
+    plt.title('User Rating Trend of Top 5 Games Over Time (2019-2023)')
+    plt.xlabel('Release Year')
+    plt.ylabel('User Rating')
+    plt.xticks(rotation=45, ha='right')
+    plt.legend(title='Game Title')
+    plt.tight_layout()
+    st.pyplot(fig5)
+
+    fig6, ax6 = plt.subplots(figsize=(15,7))
+    sns.countplot(data=df, x='Genre', hue='Age Group Targeted', ax=ax6)
+    plt.title('Popular Genres for an Age Group')
+    plt.legend(title = "Age Group", loc = "upper left", bbox_to_anchor = (1,1))
+    st.pyplot(fig6)
+
+
+def train_models(X, y):
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    models = {
+        'Linear Regression': (LinearRegression(), {'fit_intercept': [True, False]}),
+        'Decision Tree': (DecisionTreeRegressor(random_state=42), {'max_depth': [3, 5, 7]}),
+        'XGBoost': (XGBRegressor(random_state=42), {'n_estimators': [50], 'learning_rate': [0.1], 'max_depth': [3]}),
+        # 'SVR': (SVR(), {'C': [1.0], 'kernel': ['linear']})
+    }
+
+    # Sonnet    
+    # results = {}
+    # for name, model in models.items():
+    #     model.fit(X_train, y_train)
+    #     y_pred = model.predict(X_test)
+    #     mse = mean_squared_error(y_test, y_pred)
+    #     r2 = r2_score(y_test, y_pred)
+    #     results[name] = {
+    #         'model': model,
+    #         'MSE': mse,
+    #         'R2': r2,
+    #         'Train Score': model.score(X_train, y_train),
+    #         'Test Score': model.score(X_test, y_test)
+    #     }
+
+    results = {}
+
+    for model_name, (model, param_grid) in models.items():
+        print(f"Tuning {model_name}...")
+
+        # Perform grid search
+        grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=5, scoring='neg_mean_squared_error', n_jobs=-1)
+        grid_search.fit(X_train, y_train)
+        
+        # Get the best model
+        best_model = grid_search.best_estimator_
+        
+        # Make predictions with the best model
+        y_pred = best_model.predict(X_test)
+        mse = mean_squared_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        
+        # Store the results with the best model
+        results[model_name] = {
+            'model': best_model,  # Store the best model, not the original model
+            'best_params': grid_search.best_params_,
+            'MSE': mse,
+            'R2': r2,
+            'Train Score': best_model.score(X_train, y_train),
+            'Test Score': best_model.score(X_test, y_test)
         }
-    }
-    return param_grids.get(model_name, {})
-
-def train_model(X_train, X_test, y_train, y_test, model_name, model, problem_type):
-    # Create pipeline
-    steps = [
-        ("Scalar", RobustScaler()),
-        (model_name, model)
-    ]
-    pipeline = Pipeline(steps=steps)
-    
-    # Get parameter grid
-    param_grid = get_param_grid(model_name)
-    
-    # Set scoring metric based on problem type
-    scoring = 'accuracy' if problem_type == 'classification' else 'r2'
-    
-    # Perform grid search
-    grid_search = GridSearchCV(
-        estimator=pipeline,
-        param_grid=param_grid,
-        cv=5,
-        scoring=scoring,
-        return_train_score=True
-    )
-    
-    grid_search.fit(X_train, y_train)
-    
-    # Make predictions
-    y_pred = grid_search.best_estimator_.predict(X_test)
-    
-    # Create results dictionary
-    results = {
-        'model': grid_search.best_estimator_,
-        'best_params': grid_search.best_params_,
-        'train_score': grid_search.cv_results_['mean_train_score'][grid_search.best_index_],
-        'test_score': grid_search.cv_results_['mean_test_score'][grid_search.best_index_],
-        'y_pred': y_pred
-    }
+        print(f"Finished tuning {model_name}")
     
     return results
 
-def dashboard():
-    st.title("Dashboard")
+# --- Page 1: Dashboard ---
+if page == "Dashboard":
+    st.title("Video Game Rating Analysis Dashboard")
     
-    if st.session_state.data is not None:
-        st.header("Dataset Preview")
-        st.dataframe(st.session_state.data.head())
+    st.header("Project Overview")
+    st.write("""
+    This project aims to develop a predictive model that can accurately estimate the user rating of a video game based on its various features.
+    By analyzing characteristics such as price, platform, genre, multiplayer capabilities, game length, graphics, soundtrack, story quality, and other relevant attributes,
+    we aim to build a robust model that can provide insights into what factors influence user satisfaction and predict potential ratings for new or existing games.
+    """)
+    
+    # Load and display data
+    uploaded_file = st.file_uploader("Upload video_game_reviews.csv", type=["csv"])
+    
+    if uploaded_file is not None and uploaded_file.name != st.session_state.uploaded_file_name:
+        # Only load data if a new file is uploaded
+        df = load_and_process_data(uploaded_file)
+        df_processed = feature_engineering(df)
+        st.session_state.df = df
+        st.session_state.df_processed = df_processed
+        st.session_state.uploaded_file_name = uploaded_file.name
+    
+    # Display data if it exists in session state
+    if st.session_state.df is not None:
+        st.subheader("Dataset Overview")
+        st.write(st.session_state.df.head())
         
-        if st.session_state.training_results:
-            st.header("Training Results")
-            
-            # Add a save button for each model at the top
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                model_to_save = st.selectbox("Select model to save", list(st.session_state.training_results.keys()))
-            with col2:
-                if st.button("Save Selected Model"):
-                    save_path = f"{model_to_save}_model.pkl"
-                    with open(save_path, 'wb') as f:
-                        pickle.dump(st.session_state.training_results[model_to_save]['model'], f)
-                    st.success(f"Model saved as {save_path}")
-            
-            for model_name, results in st.session_state.training_results.items():
-                with st.expander(f"{model_name} Results"):
-                    # Show model definition
-                    st.markdown(f"**Model Definition:**")
-                    st.info(MODEL_DEFINITIONS.get(model_name, "Definition not available"))
-                    
-                    # Show model performance
-                    st.markdown("**Model Performance:**")
-                    st.write(f"Training Score: {results['train_score']:.4f}")
-                    st.write(f"Testing Score: {results['test_score']:.4f}")
-                    
-                    # Show metrics based on the model's problem type
-                    if results.get('problem_type') == 'classification':
-                        if 'classification_report' in results:
-                            st.markdown("**Classification Report:**")
-                            st.text(results['classification_report'])
-                        
-                        # Display confusion matrix
-                        st.markdown("**Confusion Matrix:**")
-                        if 'confusion_matrix' in results:
-                            # Create a new figure for each display
-                            fig, ax = plt.subplots(figsize=(8, 6))
-                            disp = ConfusionMatrixDisplay(confusion_matrix=results['confusion_matrix'])
-                            disp.plot(ax=ax)
-                            plt.title(f"{model_name} Confusion Matrix")
-                            st.pyplot(fig)
-                            plt.close(fig)  # Close the figure to free memory
-                    elif results.get('problem_type') == 'regression':
-                        st.markdown("**Regression Metrics:**")
-                        if all(key in results for key in ['rmse', 'mae', 'r2']):
-                            st.write(f"RMSE: {results['rmse']:.4f}")
-                            st.write(f"MAE: {results['mae']:.4f}")
-                            st.write(f"R2 Score: {results['r2']:.4f}")
-                        else:
-                            st.warning("Some regression metrics are missing for this model.")
-    else:
-        st.info("Please upload a dataset in the Training page to get started.")
+        st.subheader("Exploratory Data Analysis")
+        create_visualizations(st.session_state.df)
 
-def training():
+# --- Page 2: Train Models ---
+elif page == "Train Models":
     st.title("Model Training")
     
-    # File upload
-    uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
-    
-    if uploaded_file is not None:
-        # Load data
-        data = pd.read_csv(uploaded_file)
-        st.session_state.data = data
-        
-        # Select target column
-        target_column = st.selectbox("Select target column", data.columns)
-        st.session_state.target_column = target_column
-        
-        # Determine problem type
-        unique_values = data[target_column].nunique()
-        if unique_values <= 10:  # Assuming classification if 10 or fewer unique values
-            problem_type = "classification"
-        else:
-            problem_type = "regression"
-            
-        # Clear training results if problem type changes
-        if 'problem_type' in st.session_state and st.session_state.problem_type != problem_type:
-            st.session_state.training_results = {}
-            
-        st.session_state.problem_type = problem_type
-        
-        st.write(f"Detected problem type: {problem_type}")
-        
-        # Get available models
-        models = get_models(problem_type)
-        model_names = [m[0] for m in models]
-        
-        # Model selection
-        selected_models = st.multiselect("Select models to train", model_names)
-        
-        if selected_models:
-            # Split data
-            X = data.drop(columns=[target_column])
-            y = data[target_column]
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-            
-            if st.button("Train Models"):
-                for model_name in selected_models:
-                    st.subheader(f"Training {model_name}")
-                    
-                    # Get model object
-                    model = [m[1] for m in models if m[0] == model_name][0]
-                    
-                    # Train model
-                    results = train_model(X_train, X_test, y_train, y_test, model_name, model, problem_type)
-                    
-                    # Store results in session state
-                    if problem_type == 'classification':
-                        try:
-                            # Create and store confusion matrix
-                            cm = confusion_matrix(y_test, results['y_pred'], normalize='true')
-                            results['confusion_matrix'] = cm
-                            
-                            # Create and store classification report
-                            results['classification_report'] = classification_report(y_test, results['y_pred'])
-                            
-                            # Create confusion matrix visualization
-                            fig, ax = plt.subplots(figsize=(8, 6))
-                            disp = ConfusionMatrixDisplay(confusion_matrix=cm)
-                            disp.plot(ax=ax)
-                            plt.title(f"{model_name} Confusion Matrix")
-                            results['confusion_matrix_fig'] = fig
-                            plt.close(fig)  # Close the figure to free memory
-                        except Exception as e:
-                            st.error(f"Error creating classification metrics: {str(e)}")
-                    else:  # regression
-                        try:
-                            results['rmse'] = np.sqrt(mean_squared_error(y_test, results['y_pred']))
-                            results['mae'] = mean_absolute_error(y_test, results['y_pred'])
-                            results['r2'] = r2_score(y_test, results['y_pred'])
-                        except Exception as e:
-                            st.error(f"Error creating regression metrics: {str(e)}")
-
-                    # Add problem type to results for proper display in dashboard
-                    results['problem_type'] = problem_type
-                    
-                    st.session_state.training_results[model_name] = results
-                    
-                    # Display results
-                    st.write("Best Parameters:", results['best_params'])
-                    st.write("Training Score:", results['train_score'])
-                    st.write("Testing Score:", results['test_score'])
-                    
-                    if problem_type == 'classification':
-                        # Classification metrics
-                        st.text("Classification Report:")
-                        st.text(results['classification_report'])
-                        st.pyplot(results['confusion_matrix_fig'])
-                    else:
-                        # Regression metrics
-                        st.write("RMSE:", results['rmse'])
-                        st.write("MAE:", results['mae'])
-                        st.write("R2 Score:", results['r2'])
-
-# Main app navigation
-def main():
-    st.sidebar.title("Navigation")
-    page = st.sidebar.radio("Go to", ["Dashboard", "Training"])
-    
-    if page == "Dashboard":
-        dashboard()
+    if st.session_state.df is None:
+        st.warning("Please upload data in the Dashboard page first!")
     else:
-        training()
+        st.subheader("Feature Engineering & Model Training")
+        
+        if st.button("Start Training"):
+            with st.spinner("Processing data and training models..."):
+                # Use already processed data from session state
+                df_processed = st.session_state.df_processed
+                
+                # Prepare data for modeling
+                X = df_processed.drop(['User Rating', 'Game Title', 'User Review Text'], axis=1)
+                y = df_processed['User Rating']
+                
+                # Encode categorical features
+                categorical_features = X.select_dtypes(include=['object']).columns
+                label_encoders = {}
+                for feature in categorical_features:
+                    le = LabelEncoder()
+                    X[feature] = le.fit_transform(X[feature])
+                    label_encoders[feature] = le
+                st.session_state.label_encoders = label_encoders
+                
+                # Scale numerical features
+                scaler = StandardScaler()
+                X = scaler.fit_transform(X)
+                st.session_state.preprocessor = scaler
+                
+                # Train models
+                results = train_models(X, y)
+                st.session_state.models = results
+                
+                # Store results in session state
+                st.session_state.results = results
 
-if __name__ == "__main__":
-    main()
+        # Display results (outside of training button block)
+        if 'results' in st.session_state:
+            results_df = pd.DataFrame({
+                model_name: {
+                    'Best Parameters': str(scores['best_params']),
+                    'MSE': scores['MSE'],
+                    'R2': scores['R2'],
+                    'Train Score': scores['Train Score'],
+                    'Test Score': scores['Test Score']
+                }
+                for model_name, scores in st.session_state.results.items()
+            }).T
+            
+            st.subheader("Model Performance Comparison")
+            st.write(results_df)
+            
+        # Save model buttons (outside of the training button's if block)
+        if 'results' in st.session_state:
+            st.subheader("Save Models")
+            cols = st.columns(len(st.session_state.results))
+            for idx, (model_name, scores) in enumerate(st.session_state.results.items()):
+                with cols[idx]:
+                    if st.button(f"Save {model_name}"):
+                        # print(scores['model'])
+                        model = scores['model']
+                        joblib.dump(model, f'{model_name.lower().replace(" ", "_")}.pkl')
+                        st.success(f"{model_name} saved successfully!")
+
+# --- Page 3: Make Predictions ---
+elif page == "Make Predictions":
+    st.title("Make Predictions")
+    
+    uploaded_model = st.file_uploader("Upload trained model (.pkl)", type=['pkl'])
+    
+    if uploaded_model:
+        model = joblib.load(uploaded_model)
+        st.success("Model loaded successfully!")
+        
+        st.subheader("Enter Game Details")
+        
+        # Create input form with four columns for better organization
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            platform = st.selectbox("Platform", ['PC', 'PlayStation', 'Xbox', 'Nintendo Switch', 'Mobile'], key="platform_select")
+            age_group = st.selectbox("Age Group Targeted", ['Kids', 'Teens', 'Adults', 'All Ages'], key="age_group_select")
+            price = st.number_input("Price", min_value=0.0, max_value=100.0, value=29.99, key="price_input")
+            # graphics = st.selectbox("Graphics Quality", ['Low', 'Medium', 'High', 'Ultra'], key="graphics_select")
+            special_device = st.selectbox("Requires Special Device", ['Yes', 'No'], key="special_device_select")
+            review_sentiment = st.number_input("Review Sentiment", min_value=-1.0, max_value=1.0, value=0.033333, step=0.1, key="review_sentiment_input")
+            
+        with col2:
+            developer = st.text_input("Developer", key="developer_input")
+            publisher = st.text_input("Publisher", key="publisher_input")
+            release_year = st.number_input("Release Year", min_value=1970, max_value=2025, value=2023, key="release_year_input")
+            genre = st.selectbox("Genre", ['Action', 'Adventure', 'RPG', 'Sports', 'Strategy'], key="genre_select")
+            
+        with col3:
+            multiplayer = st.selectbox("Multiplayer", ['Yes', 'No'], key="multiplayer_select")
+            game_length = st.number_input("Game Length (Hours)", min_value=1, max_value=200, value=20, key="game_length_input")
+            min_players = st.number_input("Min Number of Players", min_value=1, max_value=10, value=1, key="min_players_input")
+            game_mode = st.selectbox("Game Mode", ['Online', 'Offline', 'Both'], key="game_mode_select")
+            
+        with col4:
+            graphics = st.selectbox("Graphics Quality", ['Low', 'Medium', 'High', 'Ultra'], key="graphics_select")
+            soundtrack = st.selectbox("Soundtrack Quality", ['Poor', 'Average', 'Good', 'Excellent'], key="soundtrack_select")
+            story = st.selectbox("Story Quality", ['Poor', 'Average', 'Good', 'Excellent'], key="story_select")
+            overall_quality = st.selectbox("Overall Quality", ['Poor', 'Average', 'Good', 'Excellent'], key="overall_quality_select")
+        
+        if st.button("Predict Rating"):
+            # Prepare input data
+            input_data = pd.DataFrame({
+                'Age Group Targeted': [age_group],
+                'Price': [price],
+                'Platform': [platform],
+                'Requires Special Device': [special_device],
+                'Developer': [developer],
+                'Publisher': [publisher],
+                'Release Year': [release_year],
+                'Genre': [genre],
+                'Multiplayer': [multiplayer],
+                'Game Length (Hours)': [game_length],
+                'Graphics Quality': [graphics],
+                'Soundtrack Quality': [soundtrack],
+                'Story Quality': [story],
+                'Game Mode': [game_mode],
+                'Min Number of Players': [min_players],
+                'Overall Quality': [overall_quality],
+                'Review_Sentiment': [review_sentiment]
+            })
+            
+            # Process input using saved encoders and scaler
+            if st.session_state.label_encoders and st.session_state.preprocessor:
+                for column, encoder in st.session_state.label_encoders.items():
+                    if column in input_data.columns:
+                        input_data[column] = encoder.transform(input_data[column])
+                
+                input_data = st.session_state.preprocessor.transform(input_data)
+                
+                # Make prediction
+                prediction = model.predict(input_data)
+                st.success(f"Predicted User Rating: {prediction[0]:.2f}/50")
