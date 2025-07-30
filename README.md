@@ -41,6 +41,12 @@ Our Streamlit app (`app.py`) works like this:
 
 ## How to Set Up the Project
 
+### Edit psql.env
+1. Make your own server on neon.tech
+2. Create a PostgreSQL server
+3. Get your unique URL
+4. Put it inside the `psql.env` file
+
 ### For Windows Users
 1. Open Command Prompt
 2. Navigate to project folder:
